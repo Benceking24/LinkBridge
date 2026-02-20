@@ -1,0 +1,13 @@
+[Unit]
+Description=LinkBridge Python Service
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/linkbridge
+ExecStart=/opt/linkbridge/venv/bin/python /opt/linkbridge/clock.py
+Restart=always
+RestartSec=5
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
