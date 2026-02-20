@@ -2,7 +2,8 @@
 - Python
 - GCC
 - ALSA
-- ALSA tools (for using `aconnect`)
+- ALSA dev libraries (`libasound2-dev`)
+- ALSA tools (for using `aconnect` that is part of `alsa-utils` package)
 
 # Install
 1. Copy the `c_lib.c` and `clock.py`

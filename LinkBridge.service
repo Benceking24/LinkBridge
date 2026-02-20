@@ -3,8 +3,10 @@ Description=LinkBridge Python Service
 After=network.target
 
 [Service]
-WorkingDirectory=/opt/linkbridge
-ExecStart=/opt/linkbridge/venv/bin/python /opt/linkbridge/clock.py
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/linkbridge
+ExecStart=/home/admin/linkbridge/venv/bin/python /home/admin/linkbridge/clock.py
 Restart=always
 RestartSec=5
 Environment="PYTHONUNBUFFERED=1"
