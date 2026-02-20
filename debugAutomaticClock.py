@@ -5,45 +5,13 @@ import time
 import signal
 import sys
 import os
-import asyncio
-import threading
-from aalink import Link
 
 # Constants
 BPM = 120
 PPQN = 24  # Pulses Per Quarter Note
 
-# Global state
+# Global flag for clean shutdown
 running = True
-midi_lib = None
-tick_interval = None
-
-# use float BPM with 0.1 precision
-current_bpm = float(BPM)
-
-def change_tempo(new_bpm):
-    """Change the tempo of the MIDI clock (applies to the C library).
-
-    This function updates the C library tempo (if available) and recalculates
-    the Python tick interval to keep timing in sync.
-    """
-    global midi_lib, current_bpm, tick_interval
-    # new_bpm can be fractional (float). We send tempo to C in tenths (int)
-    bpm10 = int(round(float(new_bpm) * 10.0))
-    if midi_lib is None:
-        # library not ready yet — just update local tempo so main loop picks it up
-        current_bpm = float(new_bpm)
-        tick_interval = calculate_tick_interval(current_bpm)
-        print(f"[Python] Tempo updated locally -> {current_bpm:.1f} BPM (C lib not ready)")
-        return
-
-    if midi_lib.midi_set_tempo(bpm10) < 0:
-        print(f"[Python] Warning: Failed to set tempo to {float(new_bpm):.1f} BPM in C library")
-    else:
-        current_bpm = float(new_bpm)
-        tick_interval = calculate_tick_interval(current_bpm)
-        print(f"[Python] Tempo changed -> {current_bpm:.1f} BPM")
-
 
 def signal_handler(sig, frame):
     """Handle SIGINT (Ctrl+C) for clean shutdown"""
@@ -57,7 +25,7 @@ def calculate_tick_interval(bpm):
     return 1.0 / ticks_per_second
 
 def main():
-    global running, midi_lib, tick_interval, current_bpm
+    global running
     
     # Setup signal handler
     signal.signal(signal.SIGINT, signal_handler)
@@ -103,11 +71,9 @@ def main():
         print("[Python] Error: Failed to initialize MIDI")
         return 1
 
-    # Set tempo in the C queue to match Python BPM (send tenths as int)
-    if midi_lib.midi_set_tempo(int(round(current_bpm * 10.0))) < 0:
-        print(f"[Python] Warning: Failed to set tempo to {current_bpm:.1f} BPM in C library")
-    # initialize tick interval from current_bpm
-    tick_interval = calculate_tick_interval(current_bpm)
+    # Set tempo in the C queue to match Python BPM
+    if midi_lib.midi_set_tempo(BPM) < 0:
+        print(f"[Python] Warning: Failed to set tempo to {BPM} BPM in C library")
     
     client_id = midi_lib.midi_get_client_id()
     port_id = midi_lib.midi_get_port_id()
@@ -126,42 +92,19 @@ def main():
         print("[Python] Error: Failed to send MIDI START")
         midi_lib.midi_cleanup()
         return 1
+    
+    # Current BPM state (start with initial BPM)
+    current_bpm = BPM
 
-    # Start Link monitor in a background thread to receive tempo updates
-    def start_link_monitor():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    # Sequence of BPM changes: after 10s -> 80, then 140, then back to 120, loop
+    bpm_sequence = [80, 140, 120]
+    seq_index = 0
 
-        async def link_coroutine():
-            link = Link(current_bpm, asyncio.get_running_loop())
-            link.enabled = True
-            link.start_stop_sync_enabled = True
-            link.quantum = 4
-            last_tempo = float(current_bpm)
-            while running:
-                try:
-                    await link.sync(1)
-                except Exception:
-                    # if sync fails, wait a bit and continue
-                    await asyncio.sleep(0.1)
-                    continue
+    # Calculate initial tick interval
+    tick_interval = calculate_tick_interval(current_bpm)
 
-                # Always check tempo (Link can advertise tempo even when not playing)
-                tempo = link.tempo
-                if tempo is not None:
-                    # update only on meaningful change to avoid noisy updates
-                    if abs(float(tempo) - last_tempo) >= 0.01:
-                        change_tempo(float(tempo))
-                        last_tempo = float(tempo)
-
-                # small sleep to yield and avoid busy-looping
-                await asyncio.sleep(0.01)
-
-        loop.run_until_complete(link_coroutine())
-
-    monitor_thread = threading.Thread(target=start_link_monitor, daemon=True)
-    monitor_thread.start()
-
+    # When to apply next BPM change
+    next_change_time = time.monotonic() + 10.0
     print(f"[Python] Tick interval: {tick_interval*1000:.3f} ms ({1/tick_interval:.1f} ticks/sec)")
     print()
     
@@ -173,6 +116,21 @@ def main():
     # Main loop - send MIDI clock ticks
     try:
         while running:
+            # Check for tempo change events (every 10 seconds)
+            now = time.monotonic()
+            if now >= next_change_time:
+                new_bpm = bpm_sequence[seq_index]
+                if midi_lib.midi_set_tempo(new_bpm) < 0:
+                    print(f"[Python] Warning: Failed to set tempo to {new_bpm} BPM in C library")
+                else:
+                    current_bpm = new_bpm
+                    tick_interval = calculate_tick_interval(current_bpm)
+                    print(f"[Python] Tempo changed -> {current_bpm} BPM")
+                seq_index = (seq_index + 1) % len(bpm_sequence)
+                next_change_time += 10.0
+                # Resync tick timing to avoid large negative sleeps
+                next_tick_time = now
+
             # Send MIDI Clock
             if midi_lib.midi_send_clock() < 0:
                 print("[Python] Error: Failed to send MIDI CLOCK")

@@ -51,9 +51,10 @@ int midi_init(void) {
         return -1;
     }
     
-    // Set initial queue tempo using BPM macro
+    // Set initial queue tempo using BPM macro (support tenths precision)
     snd_seq_queue_tempo_alloca(&queue_tempo);
-    snd_seq_queue_tempo_set_tempo(queue_tempo, 500000); // 500000 us per beat (120 BPM)
+    unsigned int init_us_per_beat = 600000000U / (BPM * 10); // BPM macro is integer
+    snd_seq_queue_tempo_set_tempo(queue_tempo, init_us_per_beat);
     snd_seq_queue_tempo_set_ppq(queue_tempo, QUEUE_TEMPO_PPQ);
     err = snd_seq_set_queue_tempo(seq_handle, queue_id, queue_tempo);
     if (err < 0) {
@@ -74,17 +75,22 @@ int midi_init(void) {
 
 // Update the queue tempo using BPM value
 // Returns 0 on success, -1 on error
-int midi_set_tempo(int bpm) {
+// Update the queue tempo using BPM value expressed in tenths (e.g. 1200 = 120.0 BPM)
+// Returns 0 on success, -1 on error
+int midi_set_tempo(int bpm10) {
     if (seq_handle == NULL) {
         fprintf(stderr, "Error: MIDI not initialized\n");
         return -1;
     }
-    if (bpm <= 0) {
-        fprintf(stderr, "Error: invalid BPM %d\n", bpm);
+    if (bpm10 <= 0) {
+        fprintf(stderr, "Error: invalid BPM (tenths) %d\n", bpm10);
         return -1;
     }
 
-    unsigned int us_per_beat = 60000000U / (unsigned int)bpm;
+    /* bpm10 is BPM * 10. To compute microseconds per beat:
+     * us_per_beat = 60000000 / BPM = 60000000 / (bpm10 / 10) = 600000000 / bpm10
+     */
+    unsigned int us_per_beat = 600000000U / (unsigned int)bpm10;
 
     /*
      * Instead of applying the tempo immediately (which would change the
@@ -115,8 +121,8 @@ int midi_set_tempo(int bpm) {
     }
     snd_seq_drain_output(seq_handle);
 
-    printf("[C] MIDI tempo (queued) set to %d BPM ( %u us/beat ) at tick %lu\n",
-           bpm, us_per_beat, (unsigned long)target_tick);
+        printf("[C] MIDI tempo (queued) set to %.1f BPM ( %u us/beat ) at tick %lu\n",
+            bpm10 / 10.0, us_per_beat, (unsigned long)target_tick);
     return 0;
 }
 
