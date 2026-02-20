@@ -7,7 +7,7 @@
 # Install
 1. Copy the `c_lib.c` and `clock.py`
 2. Compile `c_lib.c` to be used by `clock.py` with the following command:<br>
-`gcc -O3 -fPIC -shared -o liblinkbridge.so c_lib.c -lasound`
+`gcc -O3 -fPIC -shared -o liblinkbridge.so midi_clock_lib.c -lasound`
 3. Run the `clock.py`:<br>
 `python3 clock.py`
 4. Route the MIDI channel using `aconnect`:<br>

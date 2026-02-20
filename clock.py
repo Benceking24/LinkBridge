@@ -19,10 +19,9 @@ def signal_handler(sig, frame):
     print("\n[Python] Received SIGINT, shutting down...")
     running = False
 
-def calculate_tick_interval():
-    """Calculate the interval between MIDI clock ticks in seconds"""
-    # At 120 BPM with 24 PPQN: 48 ticks/second
-    ticks_per_second = (BPM / 60.0) * PPQN
+def calculate_tick_interval(bpm):
+    """Calculate the interval between MIDI clock ticks in seconds for given BPM"""
+    ticks_per_second = (bpm / 60.0) * PPQN
     return 1.0 / ticks_per_second
 
 def main():
@@ -33,12 +32,12 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     # Load the C library
-    lib_path = os.path.join(os.path.dirname(__file__), 'libmidiclock.so')
+    lib_path = os.path.join(os.path.dirname(__file__), 'liblinkbridge.so')
     
     if not os.path.exists(lib_path):
         print(f"Error: Library not found at {lib_path}")
         print("Please compile the library first:")
-        print("  gcc -shared -fPIC -o libmidiclock.so midi_clock_lib.c -lasound")
+        print("  gcc -shared -fPIC -o liblinkbridge.so midi_clock_lib.c -lasound")
         return 1
     
     try:
@@ -57,6 +56,9 @@ def main():
     midi_lib.midi_get_port_id.restype = ctypes.c_int
     midi_lib.midi_get_queue_id.restype = ctypes.c_int
     midi_lib.midi_cleanup.restype = None
+    # Expose tempo setter from C library
+    midi_lib.midi_set_tempo.restype = ctypes.c_int
+    midi_lib.midi_set_tempo.argtypes = [ctypes.c_int]
     
     print("[Python] Python MIDI Clock Generator")
     print("[Python] ============================")
@@ -68,6 +70,10 @@ def main():
     if midi_lib.midi_init() < 0:
         print("[Python] Error: Failed to initialize MIDI")
         return 1
+
+    # Set tempo in the C queue to match Python BPM
+    if midi_lib.midi_set_tempo(BPM) < 0:
+        print(f"[Python] Warning: Failed to set tempo to {BPM} BPM in C library")
     
     client_id = midi_lib.midi_get_client_id()
     port_id = midi_lib.midi_get_port_id()
@@ -87,8 +93,18 @@ def main():
         midi_lib.midi_cleanup()
         return 1
     
-    # Calculate tick interval
-    tick_interval = calculate_tick_interval()
+    # Current BPM state (start with initial BPM)
+    current_bpm = BPM
+
+    # Sequence of BPM changes: after 10s -> 80, then 140, then back to 120, loop
+    bpm_sequence = [80, 140, 120]
+    seq_index = 0
+
+    # Calculate initial tick interval
+    tick_interval = calculate_tick_interval(current_bpm)
+
+    # When to apply next BPM change
+    next_change_time = time.monotonic() + 10.0
     print(f"[Python] Tick interval: {tick_interval*1000:.3f} ms ({1/tick_interval:.1f} ticks/sec)")
     print()
     
@@ -100,6 +116,21 @@ def main():
     # Main loop - send MIDI clock ticks
     try:
         while running:
+            # Check for tempo change events (every 10 seconds)
+            now = time.monotonic()
+            if now >= next_change_time:
+                new_bpm = bpm_sequence[seq_index]
+                if midi_lib.midi_set_tempo(new_bpm) < 0:
+                    print(f"[Python] Warning: Failed to set tempo to {new_bpm} BPM in C library")
+                else:
+                    current_bpm = new_bpm
+                    tick_interval = calculate_tick_interval(current_bpm)
+                    print(f"[Python] Tempo changed -> {current_bpm} BPM")
+                seq_index = (seq_index + 1) % len(bpm_sequence)
+                next_change_time += 10.0
+                # Resync tick timing to avoid large negative sleeps
+                next_tick_time = now
+
             # Send MIDI Clock
             if midi_lib.midi_send_clock() < 0:
                 print("[Python] Error: Failed to send MIDI CLOCK")

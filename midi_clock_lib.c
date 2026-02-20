@@ -11,6 +11,9 @@ static snd_seq_t *seq_handle = NULL;
 static int port_id = -1;
 static int queue_id = -1;
 static snd_seq_tick_time_t current_queue_tick = 0;
+/* highest tick we've scheduled so far (used to place tempo changes after all
+    previously queued events) */
+static snd_seq_tick_time_t max_scheduled_tick = 0;
 
 // Initialize ALSA sequencer, create port and queue
 // Returns 0 on success, -1 on error
@@ -48,7 +51,7 @@ int midi_init(void) {
         return -1;
     }
     
-    // Set queue tempo (120 BPM)
+    // Set initial queue tempo using BPM macro
     snd_seq_queue_tempo_alloca(&queue_tempo);
     snd_seq_queue_tempo_set_tempo(queue_tempo, 500000); // 500000 us per beat (120 BPM)
     snd_seq_queue_tempo_set_ppq(queue_tempo, QUEUE_TEMPO_PPQ);
@@ -66,6 +69,54 @@ int midi_init(void) {
     
     current_queue_tick = 0;
     
+    return 0;
+}
+
+// Update the queue tempo using BPM value
+// Returns 0 on success, -1 on error
+int midi_set_tempo(int bpm) {
+    if (seq_handle == NULL) {
+        fprintf(stderr, "Error: MIDI not initialized\n");
+        return -1;
+    }
+    if (bpm <= 0) {
+        fprintf(stderr, "Error: invalid BPM %d\n", bpm);
+        return -1;
+    }
+
+    unsigned int us_per_beat = 60000000U / (unsigned int)bpm;
+
+    /*
+     * Instead of applying the tempo immediately (which would change the
+     * tick->time mapping for all remaining queued tick events), enqueue a
+     * queue-tempo event scheduled at a future tick. Events already enqueued
+     * at earlier ticks will keep their original timing.
+     */
+    snd_seq_event_t ev;
+    snd_seq_ev_clear(&ev);
+    snd_seq_ev_set_source(&ev, port_id);
+    snd_seq_ev_set_subs(&ev);
+
+
+     /* attach the tempo (microseconds per beat) to the event using ALSA
+         helper macro. The macro expects the tempo value (not a pointer). */
+     snd_seq_ev_set_queue_tempo(&ev, queue_id, us_per_beat);
+
+     /* schedule the tempo change at the next tick after the highest tick
+         we've already scheduled. This ensures earlier enqueued events keep
+         their original timing. */
+     snd_seq_tick_time_t target_tick = max_scheduled_tick + 1;
+    snd_seq_ev_schedule_tick(&ev, queue_id, 0, target_tick);
+
+    int err = snd_seq_event_output(seq_handle, &ev);
+    if (err < 0) {
+        fprintf(stderr, "Error enqueuing tempo event: %s\n", snd_strerror(err));
+        return -1;
+    }
+    snd_seq_drain_output(seq_handle);
+
+    printf("[C] MIDI tempo (queued) set to %d BPM ( %u us/beat ) at tick %lu\n",
+           bpm, us_per_beat, (unsigned long)target_tick);
     return 0;
 }
 
@@ -93,6 +144,8 @@ int midi_send_start(void) {
     
     printf("[C] MIDI START sent, queue started\n");
     
+    if (0 > max_scheduled_tick) max_scheduled_tick = 0;
+
     return 0;
 }
 
@@ -116,6 +169,7 @@ int midi_send_clock(void) {
     
     // Advance queue tick by ratio (96 PPQ / 24 PPQN = 4 ticks per MIDI clock)
     current_queue_tick += (QUEUE_TEMPO_PPQ / PPQN);
+    if (current_queue_tick > max_scheduled_tick) max_scheduled_tick = current_queue_tick;
     
     return 0;
 }
